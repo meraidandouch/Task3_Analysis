@@ -1,0 +1,442 @@
+---
+title: "Homework Template"
+author: "Merai Dandouch"
+date:   "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    theme: united
+    code_folding: show
+    toc: true
+    style: BS831.css  ## feel free to remove this if you don't want it
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+## include these options to avoid unnecessarily verbose output
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning=FALSE)
+```
+
+Please use this template to generate results for the tasks (see [rmarkdown.rstudio.com/](https://rmarkdown.rstudio.com)), or the closest equivalent if you are using Quarto. In particular, each Task should start with a level 1 heading:
+
+# Differential Analysis: Carcinogens vs. non-Carcinogens 
+
+```{r settings, warning=FALSE, message=FALSE}
+library(Biobase)
+library(limma)
+library(pheatmap)
+library(ComplexHeatmap)
+```
+
+## Uploading and Inspecting the Data
+Load object ExpressionSet which is a multi-faceted data object containing:
+
+1. exprs (p x n) 
+2. annotation pData (n x k)
+3. annotation fData (p x m) 
+
+where: 
+
+ * n = samples
+ * p = genes 
+ * m = features/gene annotations 
+ * k = phenotype annotations 
+
+*dm10 is a dataset containing mRNA expression profiles of liver tissues from mice
+exposed to different chemicals and drugs, some of which are carcinogenic.*
+
+```{r inspect_data, warning=FALSE, message=FALSE}
+dm10 <- readRDS(file.path(getwd(), "dm10.RDS"))
+dim(dm10)
+```
+
+pdata stores the experimental (phenotype) conditions ... 
+```{r p annotation, warning=FALSE, message=FALSE}
+# show the annotation of a few samples 
+tail(pData(dm10))
+```
+fdata stores the gene annotations ... 
+```{r f annotation, warning=FALSE, message=FALSE}
+# show the annotation of a few samples 
+tail(fData(dm10))
+```
+
+```{r chemicals, warning=FALSE, message=FALSE}
+# show chemicals of a few samples 
+head(table(pData(dm10)$CHEMICAL))
+```
+Check to see which samples were exposed to highly carcinogenic conditions vs not
+```{r carcinogenicity_category, warning=FALSE, message=FALSE}
+# show chemicals of a few samples 
+table(pData(dm10)$Carcinogen_liv, useNA="ifany")
+```
+
+```{r histo_exprs, warning=FALSE, message=FALSE}
+## let us simplify the phenotype name for easier handling
+colnames(pData(dm10)) <- gsub( "Carcinogen_liv", "carc", colnames(pData(dm10)) )
+## show the expression data (across all samples and genes)
+hist(exprs(dm10))
+```
+Data doesn't seem to be normalized ...? 
+
+**Remember:** 
+
+*  that dm10 exprs dimensions are p x n so samples are on the columns!
+and p are gene names which are rownames in the dataset exprs(). 
+
+*  but then those samples are actually rows in annotated pData (n x k)
+
+So the code is doing as follows: 
+
+1. Filter exprs dataset to include samples (or cols) ONLY containing contain non-car and car values and filter out controls. It's kind of confusing to think about, but the sample columns we are filtering out, are the rows in pData. Ultimately, we are removing samples that are 
+controls. 
+
+2. Filter exprs dataset to exclude samples that have NUll values in GenTox column 
+of pData. Similar execution to the above statement. 
+
+3. Order will tell you the indices of ascending values, thus we organize the dataset so that samples are ordered by increasing carc values such as ( NON-CARC, ..., CARCINOGEN, CARCINOGEN)
+
+```{r extract, warning=FALSE, message=FALSE}
+dat <- dm10[ ,pData(dm10)$carc %in% c('NON-CARC', 'CARCINOGEN')]
+
+dat <- dat[ ,!is.na(pData(dat)$GenTox)]
+
+#sort increasingly 
+#dat <- dat[ ,order(dat$carc, decreasing=TRUE)]
+dat <- dat[ ,order(dat$carc)]
+
+pData(dat)[,"carc"]
+```
+## Variation Filtering 
+MAD is the median absolute deviation (in other words, its the distance between
+observations and the mean). 
+
+Using apply we can filter highly variable genes (longest average distance from median), 
+where exprs(dat) is p x n dataset and median() and mad() will be applied to all p (rows)
+```{r mad, warning=FALSE, message=FALSE}
+MED <- apply(exprs(dat), 1, median)
+MAD <- apply(exprs(dat), 1, mad)
+top.genes <- order(MAD,decreasing=TRUE)[1:2000] # order increasingly... 
+
+plot(MED,MAD,pch=".",log="")
+points(MED[top.genes],MAD[top.genes],pch=".",col='red')
+legend("topright",pch=20,col=c('black','red'),legend=c("all genes","genes passing MAD filter"))
+```
+
+
+```{r filter, warning=FALSE, message=FALSE}
+## dat is the filtered data to be used henceforth (and carc the phenotype)
+dat <- dat[top.genes,]
+```
+
+# Task 1: Diffanal with t.test assuming unequal variance (var.equal=FALSE)
+Next, make use of the t.test function, ideally, in the t.test(gene ~ phenotype) version. Use the option var.equal, and see how the results differ, and see which of the two analyses (with var.equal=FALSE or var.equal=TRUE) yields equivalent results to those obtained with the lm function, to be used next.
+
+
+```{r task1}
+# script to evaluate each gene in dat by t.test
+# perform t-test for each sample
+y <- pData(dat)[,"carc"]
+
+calc_ttest <- function(x) {
+  tt <- t.test(x ~ y, var.equal=FALSE)
+  return(c(t.score = tt$statistic, t.pvalue = tt$p.value))
+}
+
+ttestRes0 <- apply(exprs(dat), 1, calc_ttest)
+ttestRes0 <- as.data.frame(t(ttestRes0))
+ttestRes0$t.fdr <- p.adjust(ttestRes0$t.pvalue, method = "BH")
+
+head(ttestRes0)
+
+```
+# Task 2:Diffanal with t.test assuming equal variance (var.equal=TRUE)
+Perform t.test with equal variance on all genes, adjust p-values by FDR procedure (BH method), and save the output in a data.frame named ttestRes1.
+
+```{r task2}
+# script to evaluate each gene in dat by t.test
+# perform t-test for each sample
+y <- pData(dat)[,"carc"]
+
+calc_ttest <- function(x) {
+  tt <- t.test(x ~ y, var.equal=TRUE)
+  return(c(t.score = tt$statistic, t.pvalue = tt$p.value))
+}
+
+ttestRes1 <- apply(exprs(dat), 1, calc_ttest)
+ttestRes1 <- as.data.frame(t(ttestRes1))
+ttestRes1$t.fdr <- p.adjust(ttestRes1$t.pvalue, method = "BH")
+
+head(ttestRes1)
+
+```
+```{r compare}
+## plot p-values and t-statistics of var.equal=FALSE against var.equal=TRUE
+plot(ttestRes0[,'t.pvalue'],ttestRes1[,'t.pvalue'],pch=".",
+     xlab="unequal variance",ylab="equal variance",main='t-scores comparison')
+abline(0,1,col='red')
+
+```
+
+# Task 3: Diffanal using lm w/o confounders
+Next, we will use the lm function, and compare the results to those obtained using the t.test function (see above). After computing the lm-based t-scores and p-values (and FDR-adjusted q-values), we will plot them against the t.test-based ones (one or the other is sufficient).
+
+**REMEMBER :**
+Outcome Variable X = Genes
+
+Predictor Variable Y = Carc vs Non-Carc 
+
+
+```{r task3}
+# script to evaluate each gene in dat by lm
+## the format of the output object should be as follows
+## Note: the 'lm.score' column corresponds to the 't value' parameter
+## ..returned by the summary(lm(...)) function
+
+y <- pData(dat)[,"carc"]
+
+lm_test <- function(x) {
+  dat_lm <- lm(x ~ y) 
+  dat_lm <- summary(dat_lm)
+  lm.tvalue <- dat_lm$coefficient["yCARCINOGEN","t value"]
+  lm.pvalue <- dat_lm$coefficient["yCARCINOGEN","Pr(>|t|)"]
+  return(c("lm.score" = lm.tvalue, "lm.pvalue" = lm.pvalue))
+}
+
+lmRes0 <- apply(exprs(dat), 1, lm_test) 
+lmRes0 <- as.data.frame(t(lmRes0)) #transpose dataset
+lmRes0$lm.fdr <- p.adjust(lmRes0$lm.pvalue, method = "BH")
+  
+```
+
+
+```{r plot_compare1}
+## plot lm-based statistics against t.test-based statistics
+plot(ttestRes0[,"t.score.t"],lmRes0[,"lm.score"],main="compare lm to t-test w/ unequal variance")
+```
+```{r plot_compare2}
+plot(ttestRes1[,"t.score.t"],lmRes0[,"lm.score"],main="compare lm to t-test w/ equal variance")
+```
+
+# Task 4: Controlling for confounders
+Perform differential analysis based on the lm function, while controlling for the confounding effect of genotoxicity, and save the output in a data.frame named lmRes1.
+Basically, we repeat the analysis controlling for the potentially confounding effect of the genotoxicity status of the compounds (stored in pData(dat)$GenTox).
+
+*NOTE*:Genotoxicity refers to ability of a chemical to do signiciant damage to genetic material and are usually binary numbers (0 or 1) denoting if it is damaging vs not damaging. 
+
+```{r count-genotoxic}
+## count number of genotoxic samples
+table(pData(dat)$GenTox,useNA="ifany")
+```
+
+```{r count-genotoxic-and-GenTox}
+## let's see how carcinogens and genotoxicants are distributed
+table(pData(dat)[,c("carc","GenTox")])
+```
+```{r lmRes1}
+## lmRes1 <- <script to evaluate each gene in dat by lm w/ confounder>
+  
+y <- pData(dat)[,"carc"]
+gen_tox <- pData(dat)[, "GenTox"]
+
+lm_test <- function(x) {
+  dat_lm <- lm(x ~ y + gen_tox) 
+  dat_lm <- summary(dat_lm)
+  lm.tvalue <- dat_lm$coefficient["yCARCINOGEN","t value"]
+  lm.pvalue <- dat_lm$coefficient["yCARCINOGEN","Pr(>|t|)"]
+  return(c("lm.score" = lm.tvalue, "lm.pvalue" = lm.pvalue))
+}
+
+lmRes1 <- apply(exprs(dat), 1, lm_test) 
+lmRes1 <- as.data.frame(t(lmRes1)) #transpose dataset
+lmRes1$lm.fdr <- p.adjust(lmRes1$lm.pvalue, method = "BH")
+```
+
+```{r lmRes1_results}
+head(lmRes1)
+```
+```{r lmMarkers}
+lm0.markers <- lmRes0[,"lm.fdr"]<=0.05
+lm1.markers <- lmRes1[,"lm.fdr"]<=0.05
+print(sum(lm0.markers))
+print(sum(lm1.markers))
+```
+
+**Next, we compare the two results. Which analysis returns the largest number of significant genes, and why?**
+
+* Summary: * Looking at the effects of chemicals on gene expression using a linear model with no confounding variables returns the largest number of significant genes. However, that doesn't mean it's the best model. 
+
+**REMEMBER: **
+
+* x, dependent, response, outcome  = genes
+
+* y, independent, term, predictor = carcinogenic vs non-carc 
+
+* confounding = Gen-tox
+
+Applying a linear_model(x ~ y) against the data where genes (x) is the response vector and carc data (y) are the terms which specifies a linear predictor for the response only considers the relationship between genes and chemicals that are carcinogenic vs not carcinogenic. However, when adding a confounding effect to the linear model, we are providing the model more information about the effects of chemicals on gene expression (dependent variable) and introducing less bias to the outcome. Just because a chemical might be carcinogenic, does not mean it would cause damage to DNA and cause a gene to be differentially expressed. Adding Gen-Toxicity confounding values lets us know that the effect of carcinogenic chemicals on gene expression is not biased. Therefore, the model that gave us more highly variable genes is the first model with no confounding variables but the model with less bias is the second model with a confounding variable.
+
+```{r compare_all_plots}
+## compare the scores returned by the two analyses
+lm0.markers <- lmRes0[,"lm.fdr"]<=0.05
+lm1.markers <- lmRes1[,"lm.fdr"]<=0.05
+lm.markers <- lm0.markers & lm1.markers
+plot(lmRes0[,'lm.score'],lmRes1[,'lm.score'],xlab="no confounder",ylab="w/ confounder")
+points(lmRes0[lm0.markers,'lm.score'],lmRes1[lm0.markers,'lm.score'],col="green")
+points(lmRes0[lm1.markers,'lm.score'],lmRes1[lm1.markers,'lm.score'],col="orange")
+points(lmRes0[lm.markers,'lm.score'],lmRes1[lm.markers,'lm.score'],col="blue")
+abline(0,1,col="red")
+legend("topleft",col=c("green","orange","blue"), pch=19,
+       legend=c("w/o confounders","w/ confounders","both"))
+```
+
+```{r compare_all_plots_using_ggplot)}
+library(ggplot2)
+library(dplyr)
+maxQ <- 0.05
+DFlm <- dplyr::inner_join(as.data.frame(lmRes0) %>% tibble::rownames_to_column(),
+                          as.data.frame(lmRes1) %>% tibble::rownames_to_column(),
+                          by="rowname",suffix=c(".0",".1")) %>%
+  tibble::column_to_rownames() %>%
+  dplyr::mutate(group=ifelse(lm.fdr.0<=maxQ & lm.fdr.1<=maxQ,"both",
+                             ifelse(lm.fdr.0<=maxQ,"w/o confounders",
+                                    ifelse(lm.fdr.1<=maxQ,"w/ confounders","neither"))))
+COL <- c(neither="gray",
+         "w/o confounders"="green",
+         "w/ confounders"="orange",
+         both="blue")
+ggplot2::ggplot(DFlm,aes(x=lm.score.0,y=lm.score.1,col=group)) +
+  geom_point() +
+  ggplot2::geom_abline(slope=1,intercept=0,col="red") + 
+  ggplot2::scale_color_manual(values=COL) +
+  labs(x="w/o confounders",y="w/ confounders")
+```
+```{r model_w_more_genes)}
+## let's see which analysis yields more significant genes
+apply(data.frame(unconfounded=lm0.markers,
+                 confounded=lm1.markers,
+                 both=lm.markers),2,sum)
+```
+
+# Task 5: Diffanal using limma w/o confounders
+Diffanal using limma
+We now repeat the analysis making use of the limma package, which implements a moderated t-test with pooled variance (across genes). See this markdown for an introduction to the limmma pacakge.
+
+Repeat the differential analysis using limma, and save the results in a data frame named limmaRes0. Compare the results to the ones obtained with lm, by plotting the t-scores returned by the two methods.
+```{r data_carc)}
+table(dat$carc)
+```
+
+```{r design1}
+design0 <- model.matrix( ~ carc, data = pData(dat) )
+colnames(design0) <- c("NON_CARC","CARCINOGEN")      # let's simplify column names  
+
+print(unique(design0)) # showing only one instance of each class
+
+```
+```{r lmFit)}
+fit <- lmFit(dat,design0) # fitting of linear model
+head(fit$coefficients)
+
+```
+
+```{r diffana_limma)}
+fit <- eBayes(fit)       # pooling of variance across like-genes
+limmaRes0 <- topTable(fit, coef="CARCINOGEN", adjust.method="BH", n=Inf, sort="P")
+saveRDS(limmaRes0, file=paste0(getwd(),"/limmaRes0.RDS"))
+head(limmaRes0)
+```
+```{r compare_limma_unequal}
+## compare to t.test (with unequal variance)
+if ( any(is.na(matchIdx <- match(rownames(limmaRes0),rownames(ttestRes0)))) ) stop('mismatch')
+plot(ttestRes0[matchIdx,"t.score.t"],limmaRes0[,"t"],main="compare limma to t-test w/ unequal variance")
+```
+```{r compare_limma_equal)}
+## compare to t.test (with equal variance)
+if ( any(is.na(matchIdx <- match(rownames(limmaRes0),rownames(ttestRes1)))) ) stop('mismatch')
+plot(ttestRes1[matchIdx,"t.score.t"],limmaRes0[,"t"],main="compare limma to t-test w/ equal variance")
+```
+```{r compare_limma_lim)}
+## compare to lm
+if ( any(is.na(matchIdx <- match(rownames(limmaRes0),rownames(lmRes0)))) ) stop('mismatch')
+plot(lmRes0[matchIdx,"lm.score"],limmaRes0[,"t"],main="compare limma to lm")
+```
+
+
+# Task 6: Controlling for confounders
+Repeat the differential analysis using limma, while controlling for the potentially confounding effect of genotoxicity, and save the results in a data frame names limmaRes1. Compare the results to the ones obtained with lm, by plotting the t-scores returned by the two methods.
+
+```{r limma_confounders}
+## get full differential expression output table, sorted by p-value
+## <last command to fit a limma model>
+
+design1 <- model.matrix( ~ carc + GenTox, data = pData(dat) )
+colnames(design1) <- c("NON_CARC","CARCINOGEN", "GENTOX")      # let's simplify column names
+fit1 <- lmFit(dat,design1) # fitting of linear model
+fit1 <- eBayes(fit1)       
+limmaRes1 <- topTable(fit1, coef="CARCINOGEN", adjust.method="BH", n=Inf, sort.by="P")
+saveRDS(limmaRes1, file=file.path(paste0(getwd(), "/limmaRes1.RDS")))
+```
+
+```{r limma_confounders_head)}
+head(limmaRes1)
+```
+```{r limma_cofounders_compare_lim}
+## compare to lm with confounder
+if ( any(is.na(matchIdx <- match(rownames(limmaRes1),rownames(lmRes1)))) ) stop('mismatch')
+plot(lmRes1[matchIdx,"lm.score"],limmaRes1[,"t"],main="compare limma to lm (both 'confounded')")
+```
+```{r explain_limma_lim}
+## how big/small are the differences (show the quantiles)?
+cat("How big/small are the differences (show the quantiles)?\n")
+cat("The differences are minute when comparing the results from a linear model 
+    to a limma model and this is because they are both using a linear model
+    against the dataset.
+    As shown below, the IQR for 0, 25%, 50%, 75%, 100% percentiles have a small
+    spread and the data in general is clustered around the median.")
+```
+```{r quantile}
+quantile(lmRes1[matchIdx,"lm.score"]-limmaRes1[,"t"])
+```
+
+
+# Task 7: Heatmap
+Finally, we generate a heatmap of the top markers (FDR ≤ 0.01 in either direction).
+
+```{r pheatmap}
+chemPalette <- c("lightblue", "pink")
+max_fdr <- 0.01
+markers <- lmRes1[,"lm.fdr"] <= max_fdr
+dat_heatmap <- dat[markers == TRUE, ]
+annot <- pData(dat_heatmap)[, c("carc", "GenTox")]
+annot$GenTox <- as.factor(annot$GenTox)
+annotCol <- list(
+  carc = chemPalette,
+  GenTox = chemPalette
+)
+names(annotCol$carc) <- c("NON-CARC","CARCINOGEN")
+names(annotCol$GenTox) <- c("0","1")
+dat_heatmap <- dat_heatmap[, order(dat_heatmap$carc, decreasing = FALSE)]
+pheatmap( exprs(dat_heatmap),
+         annotation_col = annot,
+         annotation_colors = annotCol,
+         clustering_method = "ward.D", # default is 'complete'
+         show_rownames = FALSE,
+         show_colnames = FALSE,
+         cluster_cols = FALSE,
+         cluster_rows = TRUE, 
+         scale = "row",  # Scale the data by row (genes)
+         )  
+```
+
+
+Using limmaRes1 to detect which genes are up-regulated vs down-regulated. 
+The reason for this, as stated above in task 4, a model with more information about the effects of chemicals on gene expression introduces less bias to the outcome.
+```{r up_down}
+limmaRes1 <- limmaRes1[markers == TRUE, ]
+up <- sum(limmaRes1$logFC >= 0)
+down <- sum(limmaRes1$logFC <= 0)
+c("up" = up, "down" = down)
+
+```
+
+
